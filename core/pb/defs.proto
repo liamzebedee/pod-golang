@@ -1,0 +1,33 @@
+syntax = "proto3";
+option go_package = "github.com/liamzebedee/pod-golang/pb";
+
+package pb;
+
+message Transaction {
+  double r_min = 1;
+  double r_max = 2;
+  double r_conf = 3;
+  bytes ctx = 4;
+}
+
+message Vote {
+  Transaction tx = 1;
+  double ts = 2;
+  int64 sn = 3;
+  bytes sig = 4;
+  bool is_heartbeat = 5;
+}
+
+message ReadResponse {
+  repeated Transaction txs = 1;
+  uint32 r_perf = 2;
+  bytes cpp = 3;
+}
+
+service ReplicaService {
+  rpc Write(Transaction) returns (Vote);
+  rpc Read(Empty) returns (ReadResponse);
+  rpc StreamVotes(Empty) returns (stream Vote);
+}
+
+message Empty {}

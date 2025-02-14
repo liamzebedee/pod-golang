@@ -1,0 +1,130 @@
+in the asynchronous model with actual network delay δ (but unknown delay upper bound), assuming at most β malicious replicas
+
+and parameterized with α ≥ 4β + 1, 
+is a responsive secure pod (Definition 9) with Confirmation within u = 2δ and Past-perfection within w = δ, satisfying the property of β-accountable safety (Definition 2), except with negligible probability.
+
+The node then considers any transaction with more than α signatures confirmed and assigns the median timestamp to it
+
+The node orders the transactions using these median timestamps, which are the node’s log. Because different nodes may receive a response from a different subset of validators, they may not arrive at the same timestamp for a given transaction. That’s what gives rise to a transaction’s wiggle room. However, a node can find upper and lower bounds for that wiggle room, a parameter we call a transaction’s minimum and maximum temperature
+
+
+package main
+
+import "fmt"
+
+// State:
+// All replicas and their public keys
+var R []Replica
+var pk map[Replica]PublicKey
+
+// The most recent timestamp returned by each replica
+var mrt map[Replica]int
+
+// The next sequence number expected by each replica
+var nextsn map[Replica]int
+
+// Timestamp received for each transaction from each replica
+var tsps map[Transaction]map[Replica]int
+
+// The pod observed by the client so far
+var D Pod
+
+// Event: Initialize replicas and their public keys
+func initEvent(replicas []Replica, keys []PublicKey) {
+    R = replicas
+    pk = make(map[Replica]PublicKey)
+    
+    // Assign public keys to replicas
+    for i, r := range R {
+        pk[r] = keys[i]
+    }
+
+    // Initialize state variables
+    tsps = make(map[Transaction]map[Replica]int)
+    D = Pod{0, 0, []int{}}
+    
+    for _, r := range R {
+        mrt[r] = 0
+        nextsn[r] = -1
+        sendConnect(r)
+    }
+}
+
+// Function: Send CONNECT message to a replica
+func sendConnect(r Replica) {
+    fmt.Println("Send <CONNECT> to", r)
+}
+
+// Event: Receive a vote from a replica
+func receiveVote(tx Transaction, ts, sn int, sigma Signature, r Replica) {
+    // Received a vote from replica Rj
+    
+    // If the vote signature is invalid, discard it
+    if !verify(pk[r], tx, ts, sn, sigma) {
+        return
+    }
+
+    // If the sequence number is not as expected, discard it
+    if sn != nextsn[r] {
+        return
+    }
+
+    // Increment the expected sequence number for Rj
+    nextsn[r]++
+
+    // If the timestamp is outdated, discard it
+    if ts < mrt[r] {
+        return
+    }
+
+    // Update the most recent timestamp for Rj
+    mrt[r] = ts
+
+    // If the transaction is a heartbeat, do not update tsps
+    if tx == HEARTBEAT {
+        return
+    }
+
+    // If tsps already contains this transaction and timestamp, discard it as duplicate
+    if tsps[tx][r] != 0 && tsps[tx][r] != ts {
+        return
+    }
+
+    // Store the timestamp for this transaction from Rj
+    if tsps[tx] == nil {
+        tsps[tx] = make(map[Replica]int)
+    }
+    tsps[tx][r] = ts
+}
+
+// Function: Verify a vote signature
+func verify(key PublicKey, tx Transaction, ts, sn int, sigma Signature) bool {
+    // Placeholder verification logic
+    return true
+}
+
+// Types
+type Replica string
+type PublicKey string
+type Transaction string
+type Signature string
+type Pod struct {
+    T      int
+    r_perf int
+    C_pp   []int
+}
+
+// Constants
+const HEARTBEAT Transaction = "HEARTBEAT"
+
+func main() {
+    // Example usage
+    replicas := []Replica{"R1", "R2", "R3"}
+    keys := []PublicKey{"Key1", "Key2", "Key3"}
+
+    // Initialize event
+    initEvent(replicas, keys)
+
+    // Example vote reception
+    receiveVote("tx1", 10, 0, "sig1", "R1")
+}
