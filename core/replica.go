@@ -1,8 +1,62 @@
 package core
 
+import (
+	"context"
+	"log"
+	"net"
+	"time"
+
+	"github.com/liamzebedee/pod-go/core/pb"
+	"google.golang.org/grpc"
+)
+
 type Replica struct {
+	pb.ReplicaServiceServer
+
 	PublicKey PublicKey
 	TxLog     []Transaction
+}
+
+func (s *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, error) {
+	return nil, nil
+}
+
+func (s *Replica) Read(ctx context.Context, _ *pb.Empty) (*pb.ReadResponse, error) {
+	return nil, nil
+}
+
+func (s *Replica) StreamVotes(_ *pb.Empty, stream grpc.ServerStreamingServer[pb.Vote]) error {
+	// every 250ms send a vote
+
+	for {
+		select {
+		case <-time.After(250 * time.Millisecond):
+			// send vote
+			stream.Send(&pb.Vote{
+				Sn: time.Now().Unix(),
+			})
+		}
+	}
+
+	// for _, feature := range s.savedFeatures {
+	// 	if inRange(feature.Location, rect) {
+	// 	  if err := stream.Send(feature); err != nil {
+	// 		return err
+	// 	  }
+	// 	}
+	//   }
+	//   return nil
+}
+
+func (rep *Replica) ListenAndServe(addr string) {
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+	var opts []grpc.ServerOption
+	grpcServer := grpc.NewServer(opts...)
+	pb.RegisterReplicaServiceServer(grpcServer, rep)
+	grpcServer.Serve(lis)
 }
 
 // Each replica maintains a sequence number, which it increments and includes every time it assigns a timestamp to a transaction

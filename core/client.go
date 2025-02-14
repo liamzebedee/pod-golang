@@ -1,7 +1,57 @@
 package core
 
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+
+	"github.com/liamzebedee/pod-go/core/pb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+)
+
 // Downstream consumers use the Client to interact with replicas
 type Client struct{}
+
+func NewClient() Client {
+	return Client{}
+}
+
+func (cl *Client) connectToReplica(serverAddr *string) {
+	var opts []grpc.DialOption
+
+	// Set up connection
+	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(*serverAddr, opts...)
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	client := pb.NewReplicaServiceClient(conn)
+
+	// Store client.
+
+	// Handle vote stream.
+	stream, err := client.StreamVotes(context.Background(), &pb.Empty{})
+	if err != nil {
+		panic(err)
+	}
+
+	for {
+		vote, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatalf("%v.ListFeatures(_) = _, %v", client, err)
+		}
+
+		// Handle vote
+		fmt.Println(vote)
+	}
+}
 
 func (cl *Client) startup() {
 	// 1. Send CONNECT to all Replicas.
