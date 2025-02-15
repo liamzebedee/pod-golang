@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 
 	"github.com/liamzebedee/pod-go/core/pb"
 	"google.golang.org/grpc"
@@ -17,27 +18,39 @@ type ReplicaInfo struct {
 	ReplicaServiceClient pb.ReplicaServiceClient
 }
 
+type VoteInBacklog struct {
+	vote    *pb.Vote
+	replica *ReplicaInfo
+}
+
 // Downstream consumers use the Client to interact with replicas
 type Client struct {
 	replicas []ReplicaInfo
 
+	// Timestamp received for each tx from each replica.
 	// transaction -> replica -> timestamp
 	// termed "tsps" in the paper.
-	timestamps map[Transaction]map[*ReplicaInfo]timestamp
+	timestamps map[pb.TXID]map[*ReplicaInfo]timestamp
 
+	// The most recent timestamp returned by each replica
 	// termed "mrt" in the paper.
 	mostRecentTimestamp map[*ReplicaInfo]timestamp
 
+	// The next sequence number expected by each replica
 	// termed "nextsn" in the paper.
-	nextSeqNum map[*ReplicaInfo]int
+	nextSeqNum map[*ReplicaInfo]int64
+
+	// Vote backlog.
+	voteBacklog      []VoteInBacklog
+	voteBacklogMutex sync.Mutex
 }
 
 func NewClient() Client {
 	return Client{
 		replicas:            []ReplicaInfo{},
-		timestamps:          make(map[Transaction]map[*ReplicaInfo]timestamp),
+		timestamps:          make(map[pb.TXID]map[*ReplicaInfo]timestamp),
 		mostRecentTimestamp: make(map[*ReplicaInfo]timestamp),
-		nextSeqNum:          make(map[*ReplicaInfo]int),
+		nextSeqNum:          make(map[*ReplicaInfo]int64),
 	}
 }
 
@@ -90,9 +103,72 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 
 				// Handle vote
 				fmt.Println(vote)
+				err = cl.receiveVote(vote, &rep)
+				if err != nil {
+					fmt.Printf("Error receiving vote: %v", err)
+				}
+
 			}
 		}(rep)
 	}
+}
+
+func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo) error {
+	// Verify signature.
+	isSigValid := true
+	if !isSigValid {
+		return fmt.Errorf("Invalid signature")
+	}
+
+	// Verify sequence number.
+	if vote.Sn != cl.nextSeqNum[replica] {
+		// Backlog vote.
+		cl.voteBacklogMutex.Lock()
+		cl.voteBacklog = append(cl.voteBacklog, VoteInBacklog{
+			vote:    vote,
+			replica: replica,
+		})
+		cl.voteBacklogMutex.Unlock()
+		return fmt.Errorf("Invalid sequence number, expected=%d, got=%d", cl.nextSeqNum[replica], vote.Sn)
+	}
+
+	// Update next sequence number.
+	cl.nextSeqNum[replica]++
+
+	// Verify timestamp.
+	if vote.Ts <= cl.mostRecentTimestamp[replica] {
+		// Rj sent old timestamp
+		return fmt.Errorf("Invalid timestamp")
+	}
+
+	// Update most recent timestamp.
+	cl.mostRecentTimestamp[replica] = vote.Ts
+
+	if vote.GetIsHeartbeat() {
+		// Heartbeat vote.
+		return nil
+	}
+
+	// Update transaction timestamp.
+	txid := vote.Tx.ID()
+
+	// Upsert (txid, map(replica->timestamp)) if not already exist.
+	if _, ok := cl.timestamps[txid]; !ok {
+		cl.timestamps[vote.Tx.ID()] = make(map[*ReplicaInfo]timestamp)
+	}
+
+	// Check map(replica->timestamp) for pre-existing key.
+	// If timestamps already contains this transaction and timestamp, discard it as duplicate
+	if ts2, ok := cl.timestamps[txid][replica]; ok && ts2 != vote.Ts {
+		// Duplicate vote.
+		// TODO is paper correct here? This seems wrong.
+		return fmt.Errorf("Duplicate vote")
+	}
+
+	// Store timestamp.
+	cl.timestamps[txid][replica] = vote.Ts
+
+	return nil
 }
 
 func makeTx(data byte) *pb.Transaction {
@@ -134,3 +210,6 @@ func (cl *Client) startup() {
 
 	// When clients read the pod, they obtain a pod data structure D = (T, rperf, Cpp), where T is set of transactions with their associated timestamps, rperf is a past- perfect round and Cpp is auxiliary data.
 }
+
+// For a timestamp ts, notation ts.getVoteMsg() denotes the vote message from some replica through which a client obtained timestamp ts. We abstract away the logic of how getVoteMsg() is implemented
+func (cl *Client) getVoteMessage() {}
