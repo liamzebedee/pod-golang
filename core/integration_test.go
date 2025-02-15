@@ -7,17 +7,6 @@ import (
 	"testing"
 )
 
-// // State:
-// // All replicas and their public keys
-// var R []Replica
-// var pk map[Replica]PublicKey
-
-// // The most recent timestamp returned by each replica
-// var mrt map[Replica]int
-
-// // The next sequence number expected by each replica
-// var nextsn map[Replica]int
-
 // // Timestamp received for each transaction from each replica
 // var tsps map[Transaction]map[Replica]int
 
@@ -98,35 +87,6 @@ import (
 // 	return true
 // }
 
-// // Types
-// type Replica string
-// type PublicKey string
-// type Transaction string
-// type Signature string
-// type Pod struct {
-// 	T      int
-// 	r_perf int
-// 	C_pp   []int
-// }
-
-// // Constants
-// const HEARTBEAT Transaction = "HEARTBEAT"
-
-// func TestFlow(t *testing.T) {
-// 	// Example usage
-// 	replicas := []Replica{"R1", "R2", "R3"}
-// 	keys := []PublicKey{"Key1", "Key2", "Key3"}
-
-// 	// Initialize event
-// 	initEvent(replicas, keys)
-
-// 	// Example vote reception
-// 	receiveVote("tx1", 10, 0, "sig1", "R1")
-
-// 	// Active validator set.
-// 	// Whenever a validator receives a new transaction from a client, it appends it to its local log, together with the current timestamp based on its local clock. It then signs the transaction with the timestamp and hands it back to the client. The client receives the signed transaction and timestamp and validates the validator’s signature using its known public key. As soon as the client has collected a certain number of signatures from the validators (e.g., α = 2/3 of the validators), the client considers the transaction confirmed. The client associates the transaction with a timestamp, too: the median among the timestamps signed by the validators.
-// }
-
 func getRandomPort() string {
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -139,26 +99,49 @@ func getRandomPort() string {
 	return portStr
 }
 
-func makeReplica() (r Replica, address string) {
-	replica1 := Replica{}
-	replicaAddress := fmt.Sprintf("%s:%s", "localhost", getRandomPort())
-	return replica1, replicaAddress
-}
-
 func TestFlow(t *testing.T) {
-	replicas := []Replica{}
-	replicaAddrs := []string{}
+	// Setup replicas config.
+	replicas := make(map[PublicKey]*Replica)
+	replicaConfigs := []ReplicaInfo{}
+	N_REPLICAS := 5
 
-	for i := 0; i < 3; i++ {
-		replica, replicaAddress := makeReplica()
-		replicas = append(replicas, replica)
-		replicaAddrs = append(replicaAddrs, replicaAddress)
-		go replica.ListenAndServe(replicaAddress)
+	// Create replicas.
+	for i := 0; i < N_REPLICAS; i++ {
+		replica := NewReplica()
+		addr := fmt.Sprintf("%s:%s", "localhost", getRandomPort())
+
+		conf := ReplicaInfo{
+			DialAddress: addr,
+			PK:          replica.PublicKey(),
+		}
+		replicaConfigs = append(replicaConfigs, conf)
+
+		replicas[replica.PublicKey()] = &replica
+
+		go replica.ListenAndServe(conf.DialAddress)
 	}
 
-	client1 := NewClient()
-	for i := 0; i < 3; i++ {
-		client1.connectToReplica(&replicaAddrs[i])
-	}
-	// client1.connectToReplica(&replicaAddress)
+	// Create client.
+	client := NewClient()
+
+	// Start client with replica config.
+	client.Start(replicaConfigs)
+
+	// State:
+
+	// The most recent timestamp returned by each replica
+	// mostRecentTimestamp := make(map[*Replica]int)
+
+	// // The next sequence number expected by each replica
+	// nextSeqNum := make(map[*Replica]int)
+
+	// // Timestamp -> Replica -> Sequence number
+	// tsps := make(map[Transaction]map[Replica]int)
+	// 	D = Pod{0, 0, []int{}}
+
+	client.Write(makeTx(1))
+
+	// Wait forever.
+	ch := make(chan bool)
+	<-ch
 }

@@ -2,6 +2,9 @@ package core
 
 // Mock signatures.
 type Signature struct{}
+
+func (s Signature) ToBytes() []byte { return []byte{} }
+
 type PublicKey struct{}
 type SecretKey struct{}
 type Keypair struct {

@@ -3,21 +3,38 @@ option go_package = "github.com/liamzebedee/pod-golang/pb";
 
 package pb;
 
+
+
+// the reader obtains associated timestamps rmin, rmax,rconf and auxiliary data Ctx, which may evolve
 message Transaction {
+  // The minimum round.
   double r_min = 1;
+  // The maximum round.
   double r_max = 2;
+  // Undefined confirmed round.
   double r_conf = 3;
   bytes ctx = 4;
 }
 
+// A vote is a tuple (tx,ts,sn,σ,R), where tx is a trans- action, ts is a timestamp, sn is a sequence number, σ is a signature, and R is a replica. A vote is valid if σ is a valid signature on message m = (tx, ts, sn) with respect to the public key pkR of replica R.
 message Vote {
+  // Transaction being voted on.
   Transaction tx = 1;
+  
+  // Timestamp
   double ts = 2;
+  
+  // Sequence number
   int64 sn = 3;
+  
+  // Signature
   bytes sig = 4;
+
+  // Is special heartbeat tx
   bool is_heartbeat = 5;
 }
 
+// When clients read the pod, they obtain a pod data structure D = (T, rperf, Cpp), where T is set of transactions with their associated timestamps, rperf is a past-perfect round and Cpp is auxiliary data
 message ReadResponse {
   repeated Transaction txs = 1;
   uint32 r_perf = 2;
@@ -25,8 +42,11 @@ message ReadResponse {
 }
 
 service ReplicaService {
+  // Write a transaction to the pod
   rpc Write(Transaction) returns (Vote);
+  // Read the pod
   rpc Read(Empty) returns (ReadResponse);
+  // Receive a realtime stream of votes for transaction timestamping
   rpc StreamVotes(Empty) returns (stream Vote);
 }
 

@@ -11,46 +11,115 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// Downstream consumers use the Client to interact with replicas
-type Client struct{}
-
-func NewClient() Client {
-	return Client{}
+type ReplicaInfo struct {
+	DialAddress          string
+	PK                   PublicKey
+	ReplicaServiceClient pb.ReplicaServiceClient
 }
 
-func (cl *Client) connectToReplica(serverAddr *string) {
-	var opts []grpc.DialOption
+// Downstream consumers use the Client to interact with replicas
+type Client struct {
+	replicas []ReplicaInfo
 
-	// Set up connection
-	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	conn, err := grpc.NewClient(*serverAddr, opts...)
-	if err != nil {
-		panic(err)
+	// transaction -> replica -> timestamp
+	// termed "tsps" in the paper.
+	timestamps map[Transaction]map[*ReplicaInfo]timestamp
+
+	// termed "mrt" in the paper.
+	mostRecentTimestamp map[*ReplicaInfo]timestamp
+
+	// termed "nextsn" in the paper.
+	nextSeqNum map[*ReplicaInfo]int
+}
+
+func NewClient() Client {
+	return Client{
+		replicas:            []ReplicaInfo{},
+		timestamps:          make(map[Transaction]map[*ReplicaInfo]timestamp),
+		mostRecentTimestamp: make(map[*ReplicaInfo]timestamp),
+		nextSeqNum:          make(map[*ReplicaInfo]int),
 	}
-	defer conn.Close()
+}
 
-	client := pb.NewReplicaServiceClient(conn)
-
-	// Store client.
-
-	// Handle vote stream.
-	stream, err := client.StreamVotes(context.Background(), &pb.Empty{})
-	if err != nil {
-		panic(err)
-	}
-
-	for {
-		vote, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
+func (cl *Client) Start(infos []ReplicaInfo) {
+	// Connect to all replicas.
+	for _, replicaInfo := range infos {
+		// 1. Connect to RPC.
+		var opts []grpc.DialOption
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient(replicaInfo.DialAddress, opts...)
 		if err != nil {
-			log.Fatalf("%v.ListFeatures(_) = _, %v", client, err)
+			panic(err)
+		}
+		// TODO.
+		// defer conn.Close()
+
+		// 2. Create RPC client.
+		replicaServiceClient := pb.NewReplicaServiceClient(conn)
+
+		// 3. Save details.
+		cl.replicas = append(cl.replicas, ReplicaInfo{
+			DialAddress:          replicaInfo.DialAddress,
+			PK:                   replicaInfo.PK,
+			ReplicaServiceClient: replicaServiceClient,
+		})
+	}
+
+	// Setup replica context.
+	for _, r := range cl.replicas {
+		cl.mostRecentTimestamp[&r] = 0
+		cl.nextSeqNum[&r] = -1
+	}
+
+	// 4. Start replica routines.
+	for _, rep := range cl.replicas {
+		go func(rep ReplicaInfo) {
+			stream, err := rep.ReplicaServiceClient.StreamVotes(context.Background(), &pb.Empty{})
+			if err != nil {
+				panic(err)
+			}
+
+			for {
+				vote, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					log.Fatalf("%v.ListFeatures(_) = _, %v", rep.ReplicaServiceClient, err)
+				}
+
+				// Handle vote
+				fmt.Println(vote)
+			}
+		}(rep)
+	}
+}
+
+func makeTx(data byte) *pb.Transaction {
+	return &pb.Transaction{
+		Ctx:   []byte{data},
+		RMin:  0,
+		RMax:  0,
+		RConf: 0,
+	}
+}
+
+func (cl *Client) Write(tx *pb.Transaction) {
+	// Send transaction to all replicas.
+	for _, replica := range cl.replicas {
+		_, err := replica.ReplicaServiceClient.Write(context.Background(), tx)
+		if err != nil {
+			// skip.
+			fmt.Printf("Error writing to replica: %v", err)
+			continue
 		}
 
-		// Handle vote
-		fmt.Println(vote)
+		// Collect votes.
 	}
+}
+
+func (cl *Client) Read() {
+
 }
 
 func (cl *Client) startup() {
