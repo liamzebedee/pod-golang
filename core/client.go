@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"sync"
 
 	"github.com/liamzebedee/pod-go/core/pb"
@@ -120,6 +121,19 @@ func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo) error {
 		return fmt.Errorf("Invalid signature")
 	}
 
+	// Process any backlog items.
+	// TODO this is probably thread-unsafe. needs mutex.
+	for _, backlogItem := range cl.voteBacklog {
+		// Short-check if sequence number matches.
+		if backlogItem.vote.Sn == cl.nextSeqNum[replica] {
+			// Process backlog item.
+			err := cl.receiveVote(backlogItem.vote, backlogItem.replica)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	// Verify sequence number.
 	if vote.Sn != cl.nextSeqNum[replica] {
 		// Backlog vote.
@@ -128,7 +142,13 @@ func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo) error {
 			vote:    vote,
 			replica: replica,
 		})
+
+		// Sort backlog ascending by sequence number
+		sort.Slice(cl.voteBacklog, func(i, j int) bool {
+			return cl.voteBacklog[i].vote.Sn < cl.voteBacklog[j].vote.Sn
+		})
 		cl.voteBacklogMutex.Unlock()
+
 		return fmt.Errorf("Invalid sequence number, expected=%d, got=%d", cl.nextSeqNum[replica], vote.Sn)
 	}
 
