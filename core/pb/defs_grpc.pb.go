@@ -19,9 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ReplicaService_Connect_FullMethodName     = "/pb.ReplicaService/Connect"
 	ReplicaService_Write_FullMethodName       = "/pb.ReplicaService/Write"
-	ReplicaService_Read_FullMethodName        = "/pb.ReplicaService/Read"
 	ReplicaService_StreamVotes_FullMethodName = "/pb.ReplicaService/StreamVotes"
 )
 
@@ -29,9 +27,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ReplicaServiceClient interface {
-	Connect(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error)
+	// Write a transaction to the replica for timestamping
 	Write(ctx context.Context, in *Transaction, opts ...grpc.CallOption) (*Vote, error)
-	Read(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ReadResponse, error)
+	// Receive a realtime stream of votes for transaction timestamping
 	StreamVotes(ctx context.Context, in *Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Vote], error)
 }
 
@@ -43,30 +41,10 @@ func NewReplicaServiceClient(cc grpc.ClientConnInterface) ReplicaServiceClient {
 	return &replicaServiceClient{cc}
 }
 
-func (c *replicaServiceClient) Connect(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
-	err := c.cc.Invoke(ctx, ReplicaService_Connect_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *replicaServiceClient) Write(ctx context.Context, in *Transaction, opts ...grpc.CallOption) (*Vote, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Vote)
 	err := c.cc.Invoke(ctx, ReplicaService_Write_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *replicaServiceClient) Read(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ReadResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ReadResponse)
-	err := c.cc.Invoke(ctx, ReplicaService_Read_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -96,9 +74,9 @@ type ReplicaService_StreamVotesClient = grpc.ServerStreamingClient[Vote]
 // All implementations must embed UnimplementedReplicaServiceServer
 // for forward compatibility.
 type ReplicaServiceServer interface {
-	Connect(context.Context, *Empty) (*Empty, error)
+	// Write a transaction to the replica for timestamping
 	Write(context.Context, *Transaction) (*Vote, error)
-	Read(context.Context, *Empty) (*ReadResponse, error)
+	// Receive a realtime stream of votes for transaction timestamping
 	StreamVotes(*Empty, grpc.ServerStreamingServer[Vote]) error
 	mustEmbedUnimplementedReplicaServiceServer()
 }
@@ -110,14 +88,8 @@ type ReplicaServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedReplicaServiceServer struct{}
 
-func (UnimplementedReplicaServiceServer) Connect(context.Context, *Empty) (*Empty, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Connect not implemented")
-}
 func (UnimplementedReplicaServiceServer) Write(context.Context, *Transaction) (*Vote, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Write not implemented")
-}
-func (UnimplementedReplicaServiceServer) Read(context.Context, *Empty) (*ReadResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Read not implemented")
 }
 func (UnimplementedReplicaServiceServer) StreamVotes(*Empty, grpc.ServerStreamingServer[Vote]) error {
 	return status.Errorf(codes.Unimplemented, "method StreamVotes not implemented")
@@ -143,24 +115,6 @@ func RegisterReplicaServiceServer(s grpc.ServiceRegistrar, srv ReplicaServiceSer
 	s.RegisterService(&ReplicaService_ServiceDesc, srv)
 }
 
-func _ReplicaService_Connect_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ReplicaServiceServer).Connect(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: ReplicaService_Connect_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ReplicaServiceServer).Connect(ctx, req.(*Empty))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _ReplicaService_Write_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Transaction)
 	if err := dec(in); err != nil {
@@ -175,24 +129,6 @@ func _ReplicaService_Write_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ReplicaServiceServer).Write(ctx, req.(*Transaction))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _ReplicaService_Read_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Empty)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ReplicaServiceServer).Read(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: ReplicaService_Read_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ReplicaServiceServer).Read(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -216,16 +152,8 @@ var ReplicaService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*ReplicaServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Connect",
-			Handler:    _ReplicaService_Connect_Handler,
-		},
-		{
 			MethodName: "Write",
 			Handler:    _ReplicaService_Write_Handler,
-		},
-		{
-			MethodName: "Read",
-			Handler:    _ReplicaService_Read_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

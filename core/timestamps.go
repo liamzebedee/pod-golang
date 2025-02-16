@@ -81,9 +81,12 @@ func MaxPossibleTimestamp(tx pb.TXID, tsps map[pb.TXID]map[ReplicaID]timestamp, 
 	return Median(timestamps[len(timestamps)-alpha:])
 }
 
-func MinPossibleTimestampForNewTx(mrt []timestamp, alpha int, beta int) timestamp {
+func MinPossibleTimestampForNewTx(mrt map[ReplicaID]timestamp, alpha int, beta int) timestamp {
 	// 1. Set timestamps to most recent timestamps
-	timestamps := mrt
+	timestamps := []timestamp{}
+	for _, ts := range mrt {
+		timestamps = append(timestamps, ts)
+	}
 
 	// 2. Sort timestamps in ascending order
 	sort.Float64s(timestamps)

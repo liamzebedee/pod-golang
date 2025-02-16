@@ -128,7 +128,7 @@ func (s *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, erro
 	// 4. Append the transaction to the log.
 	s.Log = append(s.Log, *vote)
 
-	fmt.Println("replica write tx=", tx, "ts=", ts, "sn=", sn)
+	fmt.Printf("replica write tx=%v ts=%f sn=%d\n", tx, ts, sn)
 
 	// 5. Send vote to all connected clients in background.
 	go func() {

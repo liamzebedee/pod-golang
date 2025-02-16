@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 
 	"github.com/liamzebedee/pod-go/core/pb"
@@ -28,7 +29,7 @@ type ReplicaID = *ReplicaInfo
 // Downstream consumers use the Client to interact with replicas
 type Client struct {
 	// List of all replicas in the pod.
-	replicas []ReplicaInfo
+	replicas []*ReplicaInfo
 
 	// A lookup for transaction timestamps, indexed by transaction ID and replica.
 	// transaction -> replica -> timestamp
@@ -50,7 +51,7 @@ type Client struct {
 
 func NewClient() Client {
 	return Client{
-		replicas:            []ReplicaInfo{},
+		replicas:            []*ReplicaInfo{},
 		timestamps:          make(map[pb.TXID]map[*ReplicaInfo]timestamp),
 		mostRecentTimestamp: make(map[*ReplicaInfo]timestamp),
 		nextSeqNum:          make(map[*ReplicaInfo]int64),
@@ -75,7 +76,7 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 		replicaServiceClient := pb.NewReplicaServiceClient(conn)
 
 		// 3. Save details.
-		cl.replicas = append(cl.replicas, ReplicaInfo{
+		cl.replicas = append(cl.replicas, &ReplicaInfo{
 			DialAddress:          replicaInfo.DialAddress,
 			PK:                   replicaInfo.PK,
 			ReplicaServiceClient: replicaServiceClient,
@@ -84,13 +85,13 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 
 	// Setup replica context.
 	for _, r := range cl.replicas {
-		cl.mostRecentTimestamp[&r] = 0
-		cl.nextSeqNum[&r] = -1
+		cl.mostRecentTimestamp[r] = 0
+		cl.nextSeqNum[r] = 0 // TODO is this right?
 	}
 
 	// 4. Start replica routines.
 	for _, rep := range cl.replicas {
-		go func(rep ReplicaInfo) {
+		go func(rep *ReplicaInfo) {
 			// Stream the votes from replica to client.
 			stream, err := rep.ReplicaServiceClient.StreamVotes(context.Background(), &pb.Empty{})
 			if err != nil {
@@ -111,10 +112,10 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 				fmt.Println(vote)
 
 				// 1. Process backlog for any missing sequence numbers.
-				cl.processBacklog(&rep)
+				cl.processBacklog(rep)
 
 				// 2. Process vote.
-				err = cl.receiveVote(vote, &rep, true)
+				err = cl.receiveVote(vote, rep, true)
 				if err != nil {
 					fmt.Printf("Error receiving vote: %v\n", err)
 				}
@@ -174,7 +175,7 @@ func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo, verifySequenc
 			replica: replica,
 		})
 		cl.voteBacklogMutex.Unlock()
-		fmt.Printf("adding vote to backlog, current backlog length: %d\n", cl.voteBacklog.Len())
+		fmt.Printf("adding vote to backlog sn=%d backlog.len=%d\n", vote.Sn, cl.voteBacklog.Len())
 		return fmt.Errorf("Invalid sequence number: expected=%d, got=%d\n", cl.nextSeqNum[replica], vote.Sn)
 	}
 
@@ -232,7 +233,7 @@ func (cl *Client) Write(tx *pb.Transaction) {
 
 	// Send transaction to all replicas.
 	for _, replica := range cl.replicas {
-		go func(replica ReplicaInfo) {
+		go func(replica *ReplicaInfo) {
 			vote, err := replica.ReplicaServiceClient.Write(context.Background(), tx)
 			if err != nil {
 				// skip.
@@ -260,8 +261,78 @@ func (cl *Client) Write(tx *pb.Transaction) {
 	}
 }
 
-func (cl *Client) Read() {
-	// TODO.
+type ReadResponse struct {
+	// T is a set of transactions with their associated timestamps
+	Txs []*pb.Transaction
+
+	// The past-perfect round
+	// "The past-perfection safety property of pod guarantees that T contains all transactions that every other honest party will ever read with a confirmed round smaller than rperf"
+	// TLDR: forall tx in T, tx.RConf <= rperf
+	RPerf timestamp
+
+	// Auxiliary data.
+	// Cpp is a set of votes that the client has received from replicas
+	// For now, commenting this out as we don't need it.
+	// CProp []*pb.Vote
+}
+
+func (cl *Client) Read() ReadResponse {
+	var T []*pb.Transaction
+	// var Cpp []*pb.Vote
+
+	// 1. Compute rmin, rmax, rconf for each transaction.
+	for tx, replicas := range cl.timestamps {
+		// 1. rmin
+		rMin := MinPossibleTimestamp(
+			tx,
+			cl.timestamps,
+			cl.replicas,
+			pAlpha, pBeta,
+			cl.mostRecentTimestamp,
+		)
+
+		// 2. rmax
+		rMax := MaxPossibleTimestamp(
+			tx,
+			cl.timestamps,
+			cl.replicas,
+			pAlpha, pBeta,
+		)
+
+		// 3. rconf
+		//
+		var rConf timestamp = -1
+		var timestampsList []timestamp
+		// var Ctx []*pb.Vote
+
+		// If we have a quorum of votes, calculate rconf.
+		nVotes := len(replicas)
+		if pAlpha <= nVotes {
+			// 1. Get all timestamps.
+			for _, ts := range replicas {
+				timestampsList = append(timestampsList, ts)
+				// Ctx = append(Ctx, ts.getVoteMsg())
+			}
+
+			// 2. Sort timestamps.
+			sort.Float64s(timestampsList)
+
+			// 3. Calculate median.
+			rConf = Median(timestampsList)
+		}
+
+		T = append(T, &pb.Transaction{
+			// TODO.
+			RMin: rMin, RMax: rMax, RConf: rConf, //, Ctx: Ctx
+		})
+	}
+
+	rPerf := MinPossibleTimestampForNewTx(cl.mostRecentTimestamp, pAlpha, pBeta)
+	// for _, ts := range cl.mostRecentTimestamp {
+	// 	Cpp = append(Cpp, ts.getVoteMsg())
+	// }
+
+	return ReadResponse{T, rPerf}
 }
 
 // For a timestamp ts, notation ts.getVoteMsg() denotes the vote message from some replica through which a client obtained timestamp ts. We abstract away the logic of how getVoteMsg() is implemented

@@ -3,16 +3,18 @@ option go_package = "github.com/liamzebedee/pod-golang/pb";
 
 package pb;
 
-
-
 // the reader obtains associated timestamps rmin, rmax,rconf and auxiliary data Ctx, which may evolve
 message Transaction {
   // The minimum round.
   double r_min = 1;
+  
   // The maximum round.
   double r_max = 2;
+  
   // Undefined confirmed round.
   double r_conf = 3;
+
+  // Transaction data.
   bytes ctx = 4;
 }
 
@@ -34,18 +36,10 @@ message Vote {
   bool is_heartbeat = 5;
 }
 
-// When clients read the pod, they obtain a pod data structure D = (T, rperf, Cpp), where T is set of transactions with their associated timestamps, rperf is a past-perfect round and Cpp is auxiliary data
-message ReadResponse {
-  repeated Transaction txs = 1;
-  uint32 r_perf = 2;
-  bytes cpp = 3;
-}
-
 service ReplicaService {
-  // Write a transaction to the pod
+  // Write a transaction to the replica for timestamping
   rpc Write(Transaction) returns (Vote);
-  // Read the pod
-  rpc Read(Empty) returns (ReadResponse);
+
   // Receive a realtime stream of votes for transaction timestamping
   rpc StreamVotes(Empty) returns (stream Vote);
 }
