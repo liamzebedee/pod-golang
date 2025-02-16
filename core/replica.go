@@ -136,7 +136,7 @@ func (s *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, erro
 			go func() {
 				err := stream.Send(vote)
 				if err != nil {
-					fmt.Printf("failed to send vote: %v", err)
+					fmt.Printf("failed to send vote: %v\n", err)
 				}
 			}()
 		}
@@ -156,15 +156,20 @@ func (s *Replica) StreamVotes(_ *pb.Empty, stream grpc.ServerStreamingServer[pb.
 	s.clients = append(s.clients, stream)
 
 	// Send regular heartbeats.
+	// In the paper, this is done at wall clock speed - a round is defined as the granularity of the wall clock.
+	// The heartbeat is only meant to be sent if there are no other transactions timestamped in that round (millisecond).
+	// I've taken a design decision here which seems to follow the spirit of the paper, but not the letter.
+	// The heartbeat is sent every 150ms. Every 1ms would be very fast, and incur a lot of cryptographic overhead in signing.
+	// The point of the heartbeat is to keep the bounds of the timestamps in check, ie. literally rMin is the minimum timestamp seen by the client.
+	// If we send a heartbeat every 150ms, we can be sure that the rMin is at most 150ms behind the current time.
+	// This seems to be a reasonable tradeoff.
 	for {
-		select {
-		case <-time.After(250 * time.Millisecond):
-			heartbeat, err := s.makeHeartbeatVote()
-			if err != nil {
-				panic(err)
-			}
-			stream.Send(heartbeat)
+		<-time.After(150 * time.Millisecond)
+		heartbeat, err := s.makeHeartbeatVote()
+		if err != nil {
+			panic(err)
 		}
+		stream.Send(heartbeat)
 	}
 }
 

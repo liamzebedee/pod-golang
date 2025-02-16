@@ -1,11 +1,10 @@
 package core
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"io"
-	"log"
-	"sort"
 	"sync"
 
 	"github.com/liamzebedee/pod-go/core/pb"
@@ -26,9 +25,10 @@ type VoteInBacklog struct {
 
 // Downstream consumers use the Client to interact with replicas
 type Client struct {
+	// List of all replicas in the pod.
 	replicas []ReplicaInfo
 
-	// Timestamp received for each tx from each replica.
+	// A lookup for transaction timestamps, indexed by transaction ID and replica.
 	// transaction -> replica -> timestamp
 	// termed "tsps" in the paper.
 	timestamps map[pb.TXID]map[*ReplicaInfo]timestamp
@@ -42,7 +42,7 @@ type Client struct {
 	nextSeqNum map[*ReplicaInfo]int64
 
 	// Vote backlog.
-	voteBacklog      []VoteInBacklog
+	voteBacklog      *list.List
 	voteBacklogMutex sync.Mutex
 }
 
@@ -52,6 +52,7 @@ func NewClient() Client {
 		timestamps:          make(map[pb.TXID]map[*ReplicaInfo]timestamp),
 		mostRecentTimestamp: make(map[*ReplicaInfo]timestamp),
 		nextSeqNum:          make(map[*ReplicaInfo]int64),
+		voteBacklog:         list.New(),
 	}
 }
 
@@ -88,68 +89,91 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 	// 4. Start replica routines.
 	for _, rep := range cl.replicas {
 		go func(rep ReplicaInfo) {
+			// Stream the votes from replica to client.
 			stream, err := rep.ReplicaServiceClient.StreamVotes(context.Background(), &pb.Empty{})
 			if err != nil {
 				panic(err)
 			}
 
+			// For each vote.
 			for {
 				vote, err := stream.Recv()
 				if err == io.EOF {
 					break
 				}
 				if err != nil {
-					log.Fatalf("%v.ListFeatures(_) = _, %v", rep.ReplicaServiceClient, err)
+					fmt.Printf("error streaming votes: %v\n", err)
 				}
 
 				// Handle vote
 				fmt.Println(vote)
-				err = cl.receiveVote(vote, &rep)
-				if err != nil {
-					fmt.Printf("Error receiving vote: %v", err)
-				}
 
+				// 1. Process backlog for any missing sequence numbers.
+				cl.processBacklog(&rep)
+
+				// 2. Process vote.
+				err = cl.receiveVote(vote, &rep, true)
+				if err != nil {
+					fmt.Printf("Error receiving vote: %v\n", err)
+				}
 			}
 		}(rep)
 	}
 }
 
-func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo) error {
+// Process the vote backlog.
+// The vote backlog is implemented as a doubly linked list.
+// This algorithm is O(N) where N is the number of votes in the backlog.
+// Just a simple linear scan - will be improved later.
+func (cl *Client) processBacklog(forReplica *ReplicaInfo) {
+	cl.voteBacklogMutex.Lock()
+	defer cl.voteBacklogMutex.Unlock()
+
+	if cl.voteBacklog.Len() == 0 {
+		return
+	}
+
+	for e := cl.voteBacklog.Front(); e != nil; e = e.Next() {
+		backlogItem := e.Value.(VoteInBacklog)
+
+		// Only process votes for this replica.
+		if forReplica != nil && backlogItem.replica != forReplica {
+			continue
+		}
+
+		if backlogItem.vote.Sn == cl.nextSeqNum[backlogItem.replica] {
+			// Remove from backlog.
+			cl.voteBacklog.Remove(e)
+
+			// Process backlog item.
+			err := cl.receiveVote(backlogItem.vote, backlogItem.replica, false)
+			if err != nil {
+				fmt.Printf("Error processing vote in backlog: %v\n", err)
+				// discard the item.
+			}
+		}
+	}
+}
+
+func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo, verifySequence bool) error {
 	// Verify signature.
 	isSigValid := true
 	if !isSigValid {
 		return fmt.Errorf("Invalid signature")
 	}
 
-	// Process any backlog items.
-	// TODO this is probably thread-unsafe. needs mutex.
-	for _, backlogItem := range cl.voteBacklog {
-		// Short-check if sequence number matches.
-		if backlogItem.vote.Sn == cl.nextSeqNum[replica] {
-			// Process backlog item.
-			err := cl.receiveVote(backlogItem.vote, backlogItem.replica)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
 	// Verify sequence number.
-	if vote.Sn != cl.nextSeqNum[replica] {
+	// If verifySequence is false, we are processing a vote from the backlog.
+	if verifySequence && vote.Sn != cl.nextSeqNum[replica] {
 		// Backlog vote.
 		cl.voteBacklogMutex.Lock()
-		cl.voteBacklog = append(cl.voteBacklog, VoteInBacklog{
+		cl.voteBacklog.PushBack(VoteInBacklog{
 			vote:    vote,
 			replica: replica,
 		})
-
-		// Sort backlog ascending by sequence number
-		sort.Slice(cl.voteBacklog, func(i, j int) bool {
-			return cl.voteBacklog[i].vote.Sn < cl.voteBacklog[j].vote.Sn
-		})
 		cl.voteBacklogMutex.Unlock()
-
-		return fmt.Errorf("Invalid sequence number, expected=%d, got=%d", cl.nextSeqNum[replica], vote.Sn)
+		fmt.Printf("adding vote to backlog, current backlog length: %d\n", cl.voteBacklog.Len())
+		return fmt.Errorf("Invalid sequence number: expected=%d, got=%d\n", cl.nextSeqNum[replica], vote.Sn)
 	}
 
 	// Update next sequence number.
@@ -201,34 +225,41 @@ func makeTx(data byte) *pb.Transaction {
 }
 
 func (cl *Client) Write(tx *pb.Transaction) {
+	votesCh := make(chan *pb.Vote, len(cl.replicas))
+	votes := make([]*pb.Vote, 0)
+
 	// Send transaction to all replicas.
 	for _, replica := range cl.replicas {
-		_, err := replica.ReplicaServiceClient.Write(context.Background(), tx)
-		if err != nil {
-			// skip.
-			fmt.Printf("Error writing to replica: %v", err)
+		go func(replica ReplicaInfo) {
+			vote, err := replica.ReplicaServiceClient.Write(context.Background(), tx)
+			if err != nil {
+				// skip.
+				fmt.Printf("Error writing to replica: %v", err)
+				votesCh <- nil
+				return
+			}
+
+			votesCh <- vote
+		}(replica)
+	}
+
+	// Collect votes.
+	for len(votes) < len(cl.replicas) {
+		vote := <-votesCh
+		votes = append(votes, vote)
+	}
+
+	// Log all votes for write.
+	for _, vote := range votes {
+		if vote == nil {
 			continue
 		}
-
-		// Collect votes.
+		fmt.Printf("Vote: %v\n", vote)
 	}
 }
 
 func (cl *Client) Read() {
-
-}
-
-func (cl *Client) startup() {
-	// 1. Send CONNECT to all Replicas.
-	// At initialization the client also sends a ⟨CONNECT⟩ message to each replica, which initiates a streaming connection from the replica to the client.
-
-	// A client maintains a connection to each replica and receives votes through ⟨VOTE (tx, ts, sn, σ, Rj )⟩ messages (lines 15–24).
-
-	// When a vote is received from replica Rj , the client first verifies the signature σ under Rj ’s public key (line 16). If invalid, the vote is ignored. Then the client verifies that the vote contains the next sequence number it expects to receive from replica Rj (line 17). If this is not the case, the vote is backlogged and given again to the client at a later point (the backlogging functionality is not shown in the pseudocode)
-
-	// Heartbeat messages. Clients update their most-recent timestamp mrt[Rj] every time they receive a vote from replica Rj (line 20 in Algorithm 1). However, in case Rj has not written any transaction in round r (simply because no client called write() in round r), Rj will advance its round number, but clients will not advance mrt[Rj]. We solve this by having replicas send a vote on a dummy heartBeat transaction the end of each round (lines 26–28). An obvious practi- cal implementation is to send heartBeat only for rounds when no other transactions were sent. When received by a client, a heartBeat is handled as a vote (i.e., it triggers line 15 in Algorithm 1), except that we do not check for duplicate heartBeat votes and do not update any associated values for the heartbeat transaction (see line 21 in Algorithm 1).
-
-	// When clients read the pod, they obtain a pod data structure D = (T, rperf, Cpp), where T is set of transactions with their associated timestamps, rperf is a past- perfect round and Cpp is auxiliary data.
+	// TODO.
 }
 
 // For a timestamp ts, notation ts.getVoteMsg() denotes the vote message from some replica through which a client obtained timestamp ts. We abstract away the logic of how getVoteMsg() is implemented
