@@ -23,6 +23,8 @@ type VoteInBacklog struct {
 	replica *ReplicaInfo
 }
 
+type ReplicaID = *ReplicaInfo
+
 // Downstream consumers use the Client to interact with replicas
 type Client struct {
 	// List of all replicas in the pod.
@@ -31,15 +33,15 @@ type Client struct {
 	// A lookup for transaction timestamps, indexed by transaction ID and replica.
 	// transaction -> replica -> timestamp
 	// termed "tsps" in the paper.
-	timestamps map[pb.TXID]map[*ReplicaInfo]timestamp
+	timestamps map[pb.TXID]map[ReplicaID]timestamp
 
 	// The most recent timestamp returned by each replica
 	// termed "mrt" in the paper.
-	mostRecentTimestamp map[*ReplicaInfo]timestamp
+	mostRecentTimestamp map[ReplicaID]timestamp
 
 	// The next sequence number expected by each replica
 	// termed "nextsn" in the paper.
-	nextSeqNum map[*ReplicaInfo]int64
+	nextSeqNum map[ReplicaID]int64
 
 	// Vote backlog.
 	voteBacklog      *list.List

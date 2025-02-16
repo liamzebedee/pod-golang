@@ -3,6 +3,8 @@ package core
 import (
 	"slices"
 	"sort"
+
+	"github.com/liamzebedee/pod-go/core/pb"
 )
 
 // The client uses the minPossibleTs() and maxPossibleTs() functions to compute rmin (line 9) and rmax (line 10)
@@ -16,18 +18,20 @@ import (
 //
 
 // Returns the minimum timestamp bound (rmin) for a tx.
-func MinPossibleTimestamp(tx map[string]map[string]timestamp, R []string, alpha int, beta int, mrt map[string]timestamp) timestamp {
+func MinPossibleTimestamp(tx pb.TXID, tsps map[pb.TXID]map[ReplicaID]timestamp, R []ReplicaID, alpha int, beta int, mrt map[ReplicaID]timestamp) timestamp {
+	if _, ok := tsps[tx]; !ok {
+		panic("tx not found in tsps")
+	}
+
 	// Aggregate all timestamps for a tx into a single list
 	timestamps := []timestamp{}
 
 	// 1. For each replica, get either their timestamp for the tx or the most recent timestamp from them
 	for _, Rj := range R {
-		if ts, ok := tx[Rj]; ok {
-			if ts[Rj] != -1 {
-				timestamps = append(timestamps, ts[Rj])
-			} else {
-				timestamps = append(timestamps, mrt[Rj])
-			}
+		if _, ok := tsps[tx][Rj]; ok {
+			timestamps = append(timestamps, tsps[tx][Rj])
+		} else {
+			timestamps = append(timestamps, mrt[Rj])
 		}
 	}
 
@@ -46,18 +50,20 @@ func MinPossibleTimestamp(tx map[string]map[string]timestamp, R []string, alpha 
 }
 
 // Returns the maximum timestamp bound (rmax) for a tx.
-func MaxPossibleTimestamp(tx map[string]map[string]timestamp, R []string, alpha int, beta int) timestamp {
+func MaxPossibleTimestamp(tx pb.TXID, tsps map[pb.TXID]map[ReplicaID]timestamp, R []ReplicaID, alpha int, beta int) timestamp {
+	if _, ok := tsps[tx]; !ok {
+		panic("tx not found in tsps")
+	}
+
 	// Aggregate all timestamps for a tx into a single list
 	timestamps := []timestamp{}
 
 	// 1. For each replica, get either their timestamp for the tx or fill a missing vote with the ∞ value
 	for _, Rj := range R {
-		if ts, ok := tx[Rj]; ok {
-			if ts[Rj] != -1 {
-				timestamps = append(timestamps, ts[Rj])
-			} else {
-				timestamps = append(timestamps, 1<<31-1) // Using max int for ∞
-			}
+		if _, ok := tsps[tx][Rj]; ok {
+			timestamps = append(timestamps, tsps[tx][Rj])
+		} else {
+			timestamps = append(timestamps, 1<<31-1) // Using max int for ∞
 		}
 	}
 
