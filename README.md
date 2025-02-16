@@ -14,7 +14,9 @@ It is implemented in Go, using gRPC/Protobufs for the networking.
  - [x] Read paper
  - [x] Flesh out basic types - replica, client, signatures.
  - [x] Flesh out networking - gRPC, streaming responses.
- - [ ] Write out the timestamp logic.
+ - [x] Write out the timestamp logic.
+ - [x] Write out client.write
+ - [x] Write out pod.Read
  - [ ] Develop PoC integration test.
  - [ ] Develop small demonstration of something useful.
  - [ ] Figure out what partial ordering is useful for / if this can have global total ordering.

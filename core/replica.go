@@ -146,10 +146,6 @@ func (s *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, erro
 	return vote, nil
 }
 
-func (s *Replica) Read(ctx context.Context, _ *pb.Empty) (*pb.ReadResponse, error) {
-	return nil, nil
-}
-
 func (s *Replica) StreamVotes(_ *pb.Empty, stream grpc.ServerStreamingServer[pb.Vote]) error {
 	// Add client to list of connected clients.
 	fmt.Printf("appending client client=%v\n", stream)
