@@ -22,6 +22,7 @@ const (
 	ReplicaService_Connect_FullMethodName     = "/pb.ReplicaService/Connect"
 	ReplicaService_Write_FullMethodName       = "/pb.ReplicaService/Write"
 	ReplicaService_StreamVotes_FullMethodName = "/pb.ReplicaService/StreamVotes"
+	ReplicaService_GetVotes_FullMethodName    = "/pb.ReplicaService/GetVotes"
 )
 
 // ReplicaServiceClient is the client API for ReplicaService service.
@@ -34,6 +35,8 @@ type ReplicaServiceClient interface {
 	Write(ctx context.Context, in *Transaction, opts ...grpc.CallOption) (*Vote, error)
 	// Receive a realtime stream of votes for transaction timestamping
 	StreamVotes(ctx context.Context, in *Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Vote], error)
+	// Get a range of votes, used for syncing.
+	GetVotes(ctx context.Context, in *GetVotesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Vote], error)
 }
 
 type replicaServiceClient struct {
@@ -83,6 +86,25 @@ func (c *replicaServiceClient) StreamVotes(ctx context.Context, in *Empty, opts 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ReplicaService_StreamVotesClient = grpc.ServerStreamingClient[Vote]
 
+func (c *replicaServiceClient) GetVotes(ctx context.Context, in *GetVotesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Vote], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ReplicaService_ServiceDesc.Streams[1], ReplicaService_GetVotes_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[GetVotesRequest, Vote]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ReplicaService_GetVotesClient = grpc.ServerStreamingClient[Vote]
+
 // ReplicaServiceServer is the server API for ReplicaService service.
 // All implementations must embed UnimplementedReplicaServiceServer
 // for forward compatibility.
@@ -93,6 +115,8 @@ type ReplicaServiceServer interface {
 	Write(context.Context, *Transaction) (*Vote, error)
 	// Receive a realtime stream of votes for transaction timestamping
 	StreamVotes(*Empty, grpc.ServerStreamingServer[Vote]) error
+	// Get a range of votes, used for syncing.
+	GetVotes(*GetVotesRequest, grpc.ServerStreamingServer[Vote]) error
 	mustEmbedUnimplementedReplicaServiceServer()
 }
 
@@ -111,6 +135,9 @@ func (UnimplementedReplicaServiceServer) Write(context.Context, *Transaction) (*
 }
 func (UnimplementedReplicaServiceServer) StreamVotes(*Empty, grpc.ServerStreamingServer[Vote]) error {
 	return status.Errorf(codes.Unimplemented, "method StreamVotes not implemented")
+}
+func (UnimplementedReplicaServiceServer) GetVotes(*GetVotesRequest, grpc.ServerStreamingServer[Vote]) error {
+	return status.Errorf(codes.Unimplemented, "method GetVotes not implemented")
 }
 func (UnimplementedReplicaServiceServer) mustEmbedUnimplementedReplicaServiceServer() {}
 func (UnimplementedReplicaServiceServer) testEmbeddedByValue()                        {}
@@ -180,6 +207,17 @@ func _ReplicaService_StreamVotes_Handler(srv interface{}, stream grpc.ServerStre
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ReplicaService_StreamVotesServer = grpc.ServerStreamingServer[Vote]
 
+func _ReplicaService_GetVotes_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(GetVotesRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ReplicaServiceServer).GetVotes(m, &grpc.GenericServerStream[GetVotesRequest, Vote]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ReplicaService_GetVotesServer = grpc.ServerStreamingServer[Vote]
+
 // ReplicaService_ServiceDesc is the grpc.ServiceDesc for ReplicaService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -200,6 +238,11 @@ var ReplicaService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "StreamVotes",
 			Handler:       _ReplicaService_StreamVotes_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "GetVotes",
+			Handler:       _ReplicaService_GetVotes_Handler,
 			ServerStreams: true,
 		},
 	},

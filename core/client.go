@@ -15,29 +15,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type ReplicaInfo struct {
-	DialAddress          string
-	PK                   PublicKey
-	ReplicaServiceClient pb.ReplicaServiceClient
-}
-
-func (r *ReplicaInfo) ID() ReplicaID {
-	return r.PK.String()
-}
-
-type VoteInBacklog struct {
-	vote    *pb.Vote
-	replica *ReplicaInfo
-}
-
-func todo_getReplicaIds(replicas []*ReplicaInfo) []ReplicaID {
-	ids := []ReplicaID{}
-	for _, r := range replicas {
-		ids = append(ids, r.ID())
-	}
-	return ids
-}
-
 // Downstream consumers use the Client to interact with replicas
 type Client struct {
 	// List of all replicas in the pod.
@@ -57,8 +34,11 @@ type Client struct {
 	nextSeqNum map[ReplicaID]int64
 
 	// Vote backlog.
-	voteBacklog      *list.List
-	voteBacklogMutex sync.Mutex
+	voteBacklog *list.List
+
+	// Vote lock.
+	// Serialises votes through ingestVote to be processed one-by-one.
+	voteLock sync.Mutex
 }
 
 func NewClient() Client {
@@ -81,7 +61,8 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 		if err != nil {
 			panic(err)
 		}
-		// TODO.
+
+		// NOTE: We never close the connection, as we run a streaming RPC.
 		// defer conn.Close()
 
 		// 2. Create RPC client.
@@ -104,7 +85,7 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 	// Setup replica context.
 	for _, r := range cl.replicas {
 		cl.mostRecentTimestamp[r.ID()] = 0
-		cl.nextSeqNum[r.ID()] = 0 // TODO is this right?
+		cl.nextSeqNum[r.ID()] = 0
 	}
 
 	// 4. Start replica routines.
@@ -130,30 +111,41 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 					fmt.Printf("client error streaming votes: %v\n", err)
 				}
 
-				// Handle vote
-				fmt.Printf("client got vote: seq=%d replica=%s heartbeat=%v\n", vote.Sn, rep.ID(), vote.IsHeartbeat)
-
-				// 1. Process backlog for any missing sequence numbers.
-				cl.processBacklog()
-
-				// 2. Process vote.
-				err = cl.receiveVote(vote, rep, true)
-				if err != nil {
-					fmt.Printf("client error receiving vote: %v\n", err)
-				}
+				cl.ingestVote(vote, rep)
 			}
 		}(rep, stream)
+	}
+}
+
+func (cl *Client) ingestVote(vote *pb.Vote, rep *ReplicaInfo) {
+	// Lock
+	cl.voteLock.Lock()
+	defer cl.voteLock.Unlock()
+
+	// Handle vote
+	fmt.Printf("client got vote: seq=%d replica=%s heartbeat=%v\n", vote.Sn, rep.ID(), vote.IsHeartbeat)
+
+	// 1. Process backlog for any missing sequence numbers.
+	cl.processBacklog()
+
+	// 2. Check vote sequence and add to backlog if necessary.
+	backlogged := cl.voteCheckSequence(vote, rep)
+	if backlogged {
+		return
+	}
+
+	// 3. If vote is not backlogged, process it.
+	err := cl.receiveVote(vote, rep)
+	if err != nil {
+		fmt.Printf("client error receiving vote: %v\n", err)
 	}
 }
 
 // Process the vote backlog.
 // The vote backlog is implemented as a doubly linked list.
 // This algorithm is O(N) where N is the number of votes in the backlog.
-// Just a simple linear scan - will be improved later.
+// Just a simple linear scan - can be improved later.
 func (cl *Client) processBacklog() {
-	cl.voteBacklogMutex.Lock()
-	defer cl.voteBacklogMutex.Unlock()
-
 	if cl.voteBacklog.Len() == 0 {
 		return
 	}
@@ -163,51 +155,58 @@ func (cl *Client) processBacklog() {
 		vote := backlogItem.vote
 		replicaID := backlogItem.replica.ID()
 
-		if vote.Sn == cl.nextSeqNum[replicaID] {
-			// Remove from backlog.
-			cl.voteBacklog.Remove(e)
+		// Skip if not next in sequence.
+		if vote.Sn != cl.nextSeqNum[replicaID] {
+			continue
+		}
 
-			// Process backlog item.
-			err := cl.receiveVote(backlogItem.vote, backlogItem.replica, false)
-			if err != nil {
-				fmt.Printf("Error processing vote in backlog: %v\n", err)
-				// discard the item.
-			}
+		// Remove from backlog.
+		cl.voteBacklog.Remove(e)
+
+		// Process backlog item.
+		err := cl.receiveVote(backlogItem.vote, backlogItem.replica)
+		if err != nil {
+			fmt.Printf("Error processing vote in backlog: %v\n", err)
+			// Vote is discarded in the case of error.
+			// Errors in processing the vote are non-recoverable, so we can discard safely here.
 		}
 	}
 }
 
-func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo, verifySequence bool) error {
-	cl.voteBacklogMutex.Lock()
-	defer cl.voteBacklogMutex.Unlock()
+func (cl *Client) voteCheckSequence(vote *pb.Vote, replica *ReplicaInfo) (addedToBacklog bool) {
+	// If vote is ready to be processed, don't add to backlog.
+	if vote.Sn == cl.nextSeqNum[replica.ID()] {
+		return false
+	}
 
+	// Backlog vote.
+	cl.voteBacklog.PushBack(VoteInBacklog{
+		vote:    vote,
+		replica: replica,
+	})
+	fmt.Printf("adding vote to backlog expected=%d got=%d backlog.len=%d\n", cl.nextSeqNum[replica.ID()], vote.Sn, cl.voteBacklog.Len())
+	return true
+}
+
+func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo) error {
 	// Verify signature.
-	isSigValid := true
+	isSigValid := VerifySignature(replica.PK, vote, vote.Sig)
 	if !isSigValid {
-		return fmt.Errorf("Invalid signature")
+		return fmt.Errorf("invalid signature")
 	}
 
 	// Verify sequence number.
-	// If verifySequence is false, we are processing a vote from the backlog.
-	if verifySequence && vote.Sn != cl.nextSeqNum[replica.ID()] {
-		// Backlog vote.
-		cl.voteBacklog.PushBack(VoteInBacklog{
-			vote:    vote,
-			replica: replica,
-		})
-		fmt.Printf("adding vote to backlog sn=%d backlog.len=%d\n", vote.Sn, cl.voteBacklog.Len())
-		return fmt.Errorf("invalid sequence number: expected=%d, got=%d", cl.nextSeqNum[replica.ID()], vote.Sn)
+	if vote.Sn != cl.nextSeqNum[replica.ID()] {
+		return fmt.Errorf("vote out-of-sequence, expected=%d got=%d", cl.nextSeqNum[replica.ID()], vote.Sn)
 	}
-
-	// Update next sequence number.
-	cl.nextSeqNum[replica.ID()] += 1
 
 	// Verify timestamp.
 	if vote.Ts <= cl.mostRecentTimestamp[replica.ID()] {
 		// Rj sent old timestamp
-		return fmt.Errorf("Invalid timestamp")
+		return fmt.Errorf("invalid timestamp")
 	}
 
+	cl.nextSeqNum[replica.ID()] += 1
 	// Update most recent timestamp.
 	cl.mostRecentTimestamp[replica.ID()] = vote.Ts
 
@@ -229,22 +228,13 @@ func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo, verifySequenc
 	if ts2, ok := cl.timestamps[txid][replica.ID()]; ok && ts2 != vote.Ts {
 		// Duplicate vote.
 		// TODO is paper correct here? This seems wrong.
-		return fmt.Errorf("Duplicate vote")
+		return fmt.Errorf("duplicate vote for tx")
 	}
 
 	// Store timestamp.
 	cl.timestamps[txid][replica.ID()] = vote.Ts
 
 	return nil
-}
-
-func makeTx(data byte) *pb.Transaction {
-	return &pb.Transaction{
-		Ctx:   []byte{data},
-		RMin:  0,
-		RMax:  0,
-		RConf: 0,
-	}
 }
 
 func (cl *Client) Write(tx *pb.Transaction) {
@@ -259,11 +249,7 @@ func (cl *Client) Write(tx *pb.Transaction) {
 			}
 
 			// Process vote.
-			err = cl.receiveVote(vote, replica, true)
-			if err != nil {
-				fmt.Printf("Error processing vote from Write: %v\n", err)
-				panic(err)
-			}
+			cl.ingestVote(vote, replica)
 		}(replica)
 	}
 }
@@ -342,5 +328,25 @@ func (cl *Client) Read() ReadResponse {
 	return ReadResponse{T, rPerf}
 }
 
-// For a timestamp ts, notation ts.getVoteMsg() denotes the vote message from some replica through which a client obtained timestamp ts. We abstract away the logic of how getVoteMsg() is implemented
-func (cl *Client) getVoteMessage() {}
+type ReplicaInfo struct {
+	DialAddress          string
+	PK                   PublicKey
+	ReplicaServiceClient pb.ReplicaServiceClient
+}
+
+func (r *ReplicaInfo) ID() ReplicaID {
+	return r.PK.String()
+}
+
+type VoteInBacklog struct {
+	vote    *pb.Vote
+	replica *ReplicaInfo
+}
+
+func todo_getReplicaIds(replicas []*ReplicaInfo) []ReplicaID {
+	ids := []ReplicaID{}
+	for _, r := range replicas {
+		ids = append(ids, r.ID())
+	}
+	return ids
+}

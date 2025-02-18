@@ -36,6 +36,11 @@ message Vote {
   bool is_heartbeat = 5;
 }
 
+message GetVotesRequest {
+  int64 seqStart = 1;
+  int64 seqEnd = 2;
+}
+
 service ReplicaService {
   // Connect to the replica service.
   rpc Connect(Empty) returns (Empty);
@@ -45,6 +50,9 @@ service ReplicaService {
 
   // Receive a realtime stream of votes for transaction timestamping
   rpc StreamVotes(Empty) returns (stream Vote);
+
+  // Get a range of votes, used for syncing.
+  rpc GetVotes(GetVotesRequest) returns (stream Vote);
 }
 
 message Empty {}

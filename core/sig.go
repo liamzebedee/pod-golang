@@ -45,5 +45,5 @@ func Keygen() Keypair {
 	return kp
 }
 
-func Sign(sk SecretKey, msg interface{}) Signature             { return Signature{} }
-func Verify(pk PublicKey, msg interface{}, sig Signature) bool { return true }
+func Sign(sk SecretKey, msg interface{}) Signature                   { return Signature{} }
+func VerifySignature(pk PublicKey, msg interface{}, sig []byte) bool { return true }
