@@ -278,7 +278,7 @@ func (cl *Client) Read() ReadResponse {
 		rMin := MinPossibleTimestamp(
 			tx,
 			cl.timestamps,
-			todo_getReplicaIds(cl.replicas),
+			getReplicaIds(cl.replicas),
 			pAlpha, pBeta,
 			cl.mostRecentTimestamp,
 		)
@@ -287,7 +287,7 @@ func (cl *Client) Read() ReadResponse {
 		rMax := MaxPossibleTimestamp(
 			tx,
 			cl.timestamps,
-			todo_getReplicaIds(cl.replicas),
+			getReplicaIds(cl.replicas),
 			pAlpha, pBeta,
 		)
 
@@ -347,7 +347,7 @@ type VoteInBacklog struct {
 	replica *ReplicaInfo
 }
 
-func todo_getReplicaIds(replicas []*ReplicaInfo) []ReplicaID {
+func getReplicaIds(replicas []*ReplicaInfo) []ReplicaID {
 	ids := []ReplicaID{}
 	for _, r := range replicas {
 		ids = append(ids, r.ID())

@@ -7,6 +7,8 @@ import (
 	"github.com/liamzebedee/pod-go/core/pb"
 )
 
+const INFINITY_TS timestamp = 1<<31 - 1
+
 // The client uses the minPossibleTs() and maxPossibleTs() functions to compute rmin (line 9) and rmax (line 10)
 // They return the minimum and maximum, respectively, round number that any client can ever confirm tx with.
 //
@@ -63,7 +65,7 @@ func MaxPossibleTimestamp(tx pb.TXID, tsps map[pb.TXID]map[ReplicaID]timestamp, 
 		if _, ok := tsps[tx][Rj]; ok {
 			timestamps = append(timestamps, tsps[tx][Rj])
 		} else {
-			timestamps = append(timestamps, 1<<31-1) // Using max int for ∞
+			timestamps = append(timestamps, INFINITY_TS) // Using max int for ∞
 		}
 	}
 
@@ -73,7 +75,7 @@ func MaxPossibleTimestamp(tx pb.TXID, tsps map[pb.TXID]map[ReplicaID]timestamp, 
 	// 3. Append β times the ∞ value (line 24), the worst-case timestamp that malicious replicas may send to other clients
 	infs := []timestamp{}
 	for i := 0; i < beta; i++ {
-		infs = append(infs, 1<<31-1)
+		infs = append(infs, INFINITY_TS)
 	}
 	timestamps = slices.Concat(timestamps, infs)
 
