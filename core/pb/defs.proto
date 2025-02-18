@@ -33,9 +33,13 @@ message GetVotesRequest {
   int64 seqEnd = 2;
 }
 
+message ConnectResponse {
+  bytes publicKey = 1;
+}
+
 service ReplicaService {
   // Connect to the replica service.
-  rpc Connect(Empty) returns (Empty);
+  rpc Connect(Empty) returns (ConnectResponse);
 
   // Write a transaction to the replica for timestamping
   rpc Write(Transaction) returns (Vote);

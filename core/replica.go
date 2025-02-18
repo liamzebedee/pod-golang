@@ -158,8 +158,10 @@ func (rep *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, er
 	return vote, nil
 }
 
-func (rep *Replica) Connect(ctx context.Context, _ *pb.Empty) (*pb.Empty, error) {
-	return &pb.Empty{}, nil
+func (rep *Replica) Connect(ctx context.Context, _ *pb.Empty) (*pb.ConnectResponse, error) {
+	return &pb.ConnectResponse{
+		PublicKey: []byte(rep.PublicKey().String()),
+	}, nil
 }
 
 func (s *Replica) StreamVotes(_ *pb.Empty, stream grpc.ServerStreamingServer[pb.Vote]) error {
@@ -189,6 +191,7 @@ func (s *Replica) StreamVotes(_ *pb.Empty, stream grpc.ServerStreamingServer[pb.
 }
 
 func (rep *Replica) ListenAndServe(addr string) {
+	fmt.Printf("replica listening on %s\n", addr)
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)

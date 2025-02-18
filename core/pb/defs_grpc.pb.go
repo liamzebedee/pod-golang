@@ -30,7 +30,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ReplicaServiceClient interface {
 	// Connect to the replica service.
-	Connect(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error)
+	Connect(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ConnectResponse, error)
 	// Write a transaction to the replica for timestamping
 	Write(ctx context.Context, in *Transaction, opts ...grpc.CallOption) (*Vote, error)
 	// Receive a realtime stream of votes for transaction timestamping
@@ -47,9 +47,9 @@ func NewReplicaServiceClient(cc grpc.ClientConnInterface) ReplicaServiceClient {
 	return &replicaServiceClient{cc}
 }
 
-func (c *replicaServiceClient) Connect(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error) {
+func (c *replicaServiceClient) Connect(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ConnectResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Empty)
+	out := new(ConnectResponse)
 	err := c.cc.Invoke(ctx, ReplicaService_Connect_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -110,7 +110,7 @@ type ReplicaService_GetVotesClient = grpc.ServerStreamingClient[Vote]
 // for forward compatibility.
 type ReplicaServiceServer interface {
 	// Connect to the replica service.
-	Connect(context.Context, *Empty) (*Empty, error)
+	Connect(context.Context, *Empty) (*ConnectResponse, error)
 	// Write a transaction to the replica for timestamping
 	Write(context.Context, *Transaction) (*Vote, error)
 	// Receive a realtime stream of votes for transaction timestamping
@@ -127,7 +127,7 @@ type ReplicaServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedReplicaServiceServer struct{}
 
-func (UnimplementedReplicaServiceServer) Connect(context.Context, *Empty) (*Empty, error) {
+func (UnimplementedReplicaServiceServer) Connect(context.Context, *Empty) (*ConnectResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Connect not implemented")
 }
 func (UnimplementedReplicaServiceServer) Write(context.Context, *Transaction) (*Vote, error) {

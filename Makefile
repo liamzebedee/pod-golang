@@ -4,6 +4,12 @@ OUT_DIR=$(PROTO_DIR)
 
 all: proto
 
+.PHONY: build
+
+build:
+	(cd cli/replica && go build -o ../../bin/replica)
+	(cd cli/client  && go build -o ../../bin/client)
+
 proto:
 	./etc/protoc-mac-arm64 --go_out=. --go_opt=paths=source_relative \
 	       --go-grpc_out=. --go-grpc_opt=paths=source_relative \

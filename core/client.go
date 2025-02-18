@@ -73,15 +73,19 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 		replicaServiceClient := pb.NewReplicaServiceClient(conn)
 
 		// 3. Connect to replica to verify liveness.
-		_, err = replicaServiceClient.Connect(context.Background(), &pb.Empty{})
+		res, err := replicaServiceClient.Connect(context.Background(), &pb.Empty{})
 		if err != nil {
 			panic(err)
+		}
+
+		if len(res.GetPublicKey()) == 0 {
+			panic("replica did not return public key")
 		}
 
 		// 4. Save details.
 		cl.replicas = append(cl.replicas, &ReplicaInfo{
 			DialAddress:          replicaInfo.DialAddress,
-			PK:                   replicaInfo.PK,
+			PK:                   PublicKey{string(res.GetPublicKey())},
 			ReplicaServiceClient: replicaServiceClient,
 		})
 	}
