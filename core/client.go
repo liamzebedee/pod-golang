@@ -10,7 +10,9 @@ import (
 
 	"github.com/liamzebedee/pod-go/core/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 type ReplicaInfo struct {
@@ -19,12 +21,22 @@ type ReplicaInfo struct {
 	ReplicaServiceClient pb.ReplicaServiceClient
 }
 
+func (r *ReplicaInfo) ID() ReplicaID {
+	return r.PK.String()
+}
+
 type VoteInBacklog struct {
 	vote    *pb.Vote
 	replica *ReplicaInfo
 }
 
-type ReplicaID = *ReplicaInfo
+func todo_getReplicaIds(replicas []*ReplicaInfo) []ReplicaID {
+	ids := []ReplicaID{}
+	for _, r := range replicas {
+		ids = append(ids, r.ID())
+	}
+	return ids
+}
 
 // Downstream consumers use the Client to interact with replicas
 type Client struct {
@@ -52,9 +64,9 @@ type Client struct {
 func NewClient() Client {
 	return Client{
 		replicas:            []*ReplicaInfo{},
-		timestamps:          make(map[pb.TXID]map[*ReplicaInfo]timestamp),
-		mostRecentTimestamp: make(map[*ReplicaInfo]timestamp),
-		nextSeqNum:          make(map[*ReplicaInfo]int64),
+		timestamps:          make(map[pb.TXID]map[ReplicaID]timestamp),
+		mostRecentTimestamp: make(map[ReplicaID]timestamp),
+		nextSeqNum:          make(map[ReplicaID]int64),
 		voteBacklog:         list.New(),
 	}
 }
@@ -75,7 +87,13 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 		// 2. Create RPC client.
 		replicaServiceClient := pb.NewReplicaServiceClient(conn)
 
-		// 3. Save details.
+		// 3. Connect to replica to verify liveness.
+		_, err = replicaServiceClient.Connect(context.Background(), &pb.Empty{})
+		if err != nil {
+			panic(err)
+		}
+
+		// 4. Save details.
 		cl.replicas = append(cl.replicas, &ReplicaInfo{
 			DialAddress:          replicaInfo.DialAddress,
 			PK:                   replicaInfo.PK,
@@ -85,19 +103,23 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 
 	// Setup replica context.
 	for _, r := range cl.replicas {
-		cl.mostRecentTimestamp[r] = 0
-		cl.nextSeqNum[r] = 0 // TODO is this right?
+		cl.mostRecentTimestamp[r.ID()] = 0
+		cl.nextSeqNum[r.ID()] = 0 // TODO is this right?
 	}
 
 	// 4. Start replica routines.
 	for _, rep := range cl.replicas {
-		go func(rep *ReplicaInfo) {
-			// Stream the votes from replica to client.
-			stream, err := rep.ReplicaServiceClient.StreamVotes(context.Background(), &pb.Empty{})
-			if err != nil {
-				panic(err)
-			}
+		// Stream the votes from replica to client.
+		stream, err := rep.ReplicaServiceClient.StreamVotes(context.Background(), &pb.Empty{})
+		got := status.Code(err)
+		if got != codes.OK {
+			fmt.Printf("client error connecting to replica: %v\n", err)
+			continue
+		}
 
+		fmt.Printf("client connected to replica: %s\n", rep.ID())
+
+		go func(rep *ReplicaInfo, stream grpc.ServerStreamingClient[pb.Vote]) {
 			// For each vote.
 			for {
 				vote, err := stream.Recv()
@@ -105,22 +127,22 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 					break
 				}
 				if err != nil {
-					fmt.Printf("error streaming votes: %v\n", err)
+					fmt.Printf("client error streaming votes: %v\n", err)
 				}
 
 				// Handle vote
-				fmt.Println(vote)
+				fmt.Printf("client got vote: seq=%d replica=%s heartbeat=%v\n", vote.Sn, rep.ID(), vote.IsHeartbeat)
 
 				// 1. Process backlog for any missing sequence numbers.
-				cl.processBacklog(rep)
+				cl.processBacklog()
 
 				// 2. Process vote.
 				err = cl.receiveVote(vote, rep, true)
 				if err != nil {
-					fmt.Printf("Error receiving vote: %v\n", err)
+					fmt.Printf("client error receiving vote: %v\n", err)
 				}
 			}
-		}(rep)
+		}(rep, stream)
 	}
 }
 
@@ -128,7 +150,7 @@ func (cl *Client) Start(infos []ReplicaInfo) {
 // The vote backlog is implemented as a doubly linked list.
 // This algorithm is O(N) where N is the number of votes in the backlog.
 // Just a simple linear scan - will be improved later.
-func (cl *Client) processBacklog(forReplica *ReplicaInfo) {
+func (cl *Client) processBacklog() {
 	cl.voteBacklogMutex.Lock()
 	defer cl.voteBacklogMutex.Unlock()
 
@@ -138,13 +160,10 @@ func (cl *Client) processBacklog(forReplica *ReplicaInfo) {
 
 	for e := cl.voteBacklog.Front(); e != nil; e = e.Next() {
 		backlogItem := e.Value.(VoteInBacklog)
+		vote := backlogItem.vote
+		replicaID := backlogItem.replica.ID()
 
-		// Only process votes for this replica.
-		if forReplica != nil && backlogItem.replica != forReplica {
-			continue
-		}
-
-		if backlogItem.vote.Sn == cl.nextSeqNum[backlogItem.replica] {
+		if vote.Sn == cl.nextSeqNum[replicaID] {
 			// Remove from backlog.
 			cl.voteBacklog.Remove(e)
 
@@ -159,6 +178,9 @@ func (cl *Client) processBacklog(forReplica *ReplicaInfo) {
 }
 
 func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo, verifySequence bool) error {
+	cl.voteBacklogMutex.Lock()
+	defer cl.voteBacklogMutex.Unlock()
+
 	// Verify signature.
 	isSigValid := true
 	if !isSigValid {
@@ -167,29 +189,27 @@ func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo, verifySequenc
 
 	// Verify sequence number.
 	// If verifySequence is false, we are processing a vote from the backlog.
-	if verifySequence && vote.Sn != cl.nextSeqNum[replica] {
+	if verifySequence && vote.Sn != cl.nextSeqNum[replica.ID()] {
 		// Backlog vote.
-		cl.voteBacklogMutex.Lock()
 		cl.voteBacklog.PushBack(VoteInBacklog{
 			vote:    vote,
 			replica: replica,
 		})
-		cl.voteBacklogMutex.Unlock()
 		fmt.Printf("adding vote to backlog sn=%d backlog.len=%d\n", vote.Sn, cl.voteBacklog.Len())
-		return fmt.Errorf("Invalid sequence number: expected=%d, got=%d\n", cl.nextSeqNum[replica], vote.Sn)
+		return fmt.Errorf("invalid sequence number: expected=%d, got=%d", cl.nextSeqNum[replica.ID()], vote.Sn)
 	}
 
 	// Update next sequence number.
-	cl.nextSeqNum[replica]++
+	cl.nextSeqNum[replica.ID()] += 1
 
 	// Verify timestamp.
-	if vote.Ts <= cl.mostRecentTimestamp[replica] {
+	if vote.Ts <= cl.mostRecentTimestamp[replica.ID()] {
 		// Rj sent old timestamp
 		return fmt.Errorf("Invalid timestamp")
 	}
 
 	// Update most recent timestamp.
-	cl.mostRecentTimestamp[replica] = vote.Ts
+	cl.mostRecentTimestamp[replica.ID()] = vote.Ts
 
 	if vote.GetIsHeartbeat() {
 		// Heartbeat vote.
@@ -201,19 +221,19 @@ func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo, verifySequenc
 
 	// Upsert (txid, map(replica->timestamp)) if not already exist.
 	if _, ok := cl.timestamps[txid]; !ok {
-		cl.timestamps[vote.Tx.ID()] = make(map[*ReplicaInfo]timestamp)
+		cl.timestamps[vote.Tx.ID()] = make(map[ReplicaID]timestamp)
 	}
 
 	// Check map(replica->timestamp) for pre-existing key.
 	// If timestamps already contains this transaction and timestamp, discard it as duplicate
-	if ts2, ok := cl.timestamps[txid][replica]; ok && ts2 != vote.Ts {
+	if ts2, ok := cl.timestamps[txid][replica.ID()]; ok && ts2 != vote.Ts {
 		// Duplicate vote.
 		// TODO is paper correct here? This seems wrong.
 		return fmt.Errorf("Duplicate vote")
 	}
 
 	// Store timestamp.
-	cl.timestamps[txid][replica] = vote.Ts
+	cl.timestamps[txid][replica.ID()] = vote.Ts
 
 	return nil
 }
@@ -228,9 +248,6 @@ func makeTx(data byte) *pb.Transaction {
 }
 
 func (cl *Client) Write(tx *pb.Transaction) {
-	votesCh := make(chan *pb.Vote, len(cl.replicas))
-	votes := make([]*pb.Vote, 0)
-
 	// Send transaction to all replicas.
 	for _, replica := range cl.replicas {
 		go func(replica *ReplicaInfo) {
@@ -238,26 +255,16 @@ func (cl *Client) Write(tx *pb.Transaction) {
 			if err != nil {
 				// skip.
 				fmt.Printf("Error writing to replica: %v", err)
-				votesCh <- nil
 				return
 			}
 
-			votesCh <- vote
+			// Process vote.
+			err = cl.receiveVote(vote, replica, true)
+			if err != nil {
+				fmt.Printf("Error processing vote from Write: %v\n", err)
+				panic(err)
+			}
 		}(replica)
-	}
-
-	// Collect votes.
-	for len(votes) < len(cl.replicas) {
-		vote := <-votesCh
-		votes = append(votes, vote)
-	}
-
-	// Log all votes for write.
-	for _, vote := range votes {
-		if vote == nil {
-			continue
-		}
-		fmt.Printf("Vote: %v\n", vote)
 	}
 }
 
@@ -286,7 +293,7 @@ func (cl *Client) Read() ReadResponse {
 		rMin := MinPossibleTimestamp(
 			tx,
 			cl.timestamps,
-			cl.replicas,
+			todo_getReplicaIds(cl.replicas),
 			pAlpha, pBeta,
 			cl.mostRecentTimestamp,
 		)
@@ -295,7 +302,7 @@ func (cl *Client) Read() ReadResponse {
 		rMax := MaxPossibleTimestamp(
 			tx,
 			cl.timestamps,
-			cl.replicas,
+			todo_getReplicaIds(cl.replicas),
 			pAlpha, pBeta,
 		)
 

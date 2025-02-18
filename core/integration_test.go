@@ -28,7 +28,7 @@ func TestFlow(t *testing.T) {
 	// Create replicas.
 	for i := 0; i < N_REPLICAS; i++ {
 		replica := NewReplica()
-		addr := fmt.Sprintf("%s:%s", "localhost", getRandomPort())
+		addr := fmt.Sprintf("%s:%s", "127.0.0.1", getRandomPort())
 
 		conf := ReplicaInfo{
 			DialAddress: addr,

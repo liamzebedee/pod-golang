@@ -28,6 +28,9 @@ type Replica struct {
 	// The set of all connected clients.
 	clients []grpc.ServerStreamingServer[pb.Vote]
 
+	// Seen transactions.
+	seen map[pb.TXID]bool
+
 	writeMutex sync.Mutex
 }
 
@@ -39,15 +42,15 @@ func signVote(vote *pb.Vote, keypair Keypair) []byte {
 	// 1. Construct envelope to be signed.
 	buf := []byte{}
 
-	// buf = vote.tx
+	// buf += vote.tx
 	buf = append(buf, vote.Tx.GetCtx()...)
 
-	// buf = vote.tx ++ vote.ts
+	// buf += vote.ts
 	buf_ts := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf_ts[:], math.Float64bits(vote.Ts))
 	buf = append(buf, buf_ts...)
 
-	// buf = vote.tx ++ vote.ts ++ vote.sn
+	// buf += vote.sn
 	buf_sn := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf_sn[:], uint64(vote.Sn))
 	buf = append(buf, buf_sn...)
@@ -65,6 +68,7 @@ func NewReplica() Replica {
 		Log:        []pb.Vote{},
 		nextSeqNum: 0,
 		clients:    []grpc.ServerStreamingServer[pb.Vote]{},
+		seen:       make(map[pb.TXID]bool),
 	}
 }
 
@@ -103,17 +107,23 @@ func (s *Replica) makeHeartbeatVote() (*pb.Vote, error) {
 	return vote, nil
 }
 
-func (s *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, error) {
+func (rep *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, error) {
 	// When it receives ⟨WRITE tx⟩. a replica first checks whether it has already seen tx, in which case the message is ignored. Otherwise, it assigns tx a timestamp ts equal its local round number and the next available sequence number sn, and signs the message (tx, ts, sn) (line 19). Honest replicas use incremental sequence numbers for each transaction, so if a vote has a larger sequence number than another vote, it will have a larger or equal timestamp than the other. The replica appends (tx,ts,sn,σ) to replicaLog, and sends it via a ⟨VOTE (tx,ts,sn,σ,R)⟩ message to all connected clients (line 22
-	s.writeMutex.Lock()
-	defer s.writeMutex.Unlock()
+	rep.writeMutex.Lock()
+	defer rep.writeMutex.Unlock()
+
+	// Check if we've seen this transaction before.
+	if rep.seen[tx.ID()] {
+		return nil, fmt.Errorf("transaction already seen")
+	}
+	rep.seen[tx.ID()] = true
 
 	// 1. Assign a timestamp to the transaction.
 	ts := getTimestamp()
 
 	// 2. Assign a sequence number to the transaction.
-	sn := s.nextSeqNum
-	s.nextSeqNum++
+	sn := rep.nextSeqNum
+	rep.nextSeqNum++
 
 	// 3. Sign the transaction.
 	vote := &pb.Vote{
@@ -123,16 +133,16 @@ func (s *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, erro
 		Sn:          sn,
 		Sig:         []byte{},
 	}
-	vote.Sig = signVote(vote, s.keypair)
+	vote.Sig = signVote(vote, rep.keypair)
 
 	// 4. Append the transaction to the log.
-	s.Log = append(s.Log, *vote)
+	rep.Log = append(rep.Log, *vote)
 
 	fmt.Printf("replica write tx=%v ts=%f sn=%d\n", tx, ts, sn)
 
 	// 5. Send vote to all connected clients in background.
 	go func() {
-		for _, stream := range s.clients {
+		for _, stream := range rep.clients {
 			go func() {
 				err := stream.Send(vote)
 				if err != nil {
@@ -144,6 +154,10 @@ func (s *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, erro
 
 	// 6. Return signed timestamped transaction (vote).
 	return vote, nil
+}
+
+func (rep *Replica) Connect(ctx context.Context, _ *pb.Empty) (*pb.Empty, error) {
+	return &pb.Empty{}, nil
 }
 
 func (s *Replica) StreamVotes(_ *pb.Empty, stream grpc.ServerStreamingServer[pb.Vote]) error {
@@ -165,7 +179,10 @@ func (s *Replica) StreamVotes(_ *pb.Empty, stream grpc.ServerStreamingServer[pb.
 		if err != nil {
 			panic(err)
 		}
-		stream.Send(heartbeat)
+		err = stream.Send(heartbeat)
+		if err != nil {
+			fmt.Printf("error: failed to send heartbeat: %v\n", err)
+		}
 	}
 }
 

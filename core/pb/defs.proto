@@ -37,6 +37,9 @@ message Vote {
 }
 
 service ReplicaService {
+  // Connect to the replica service.
+  rpc Connect(Empty) returns (Empty);
+
   // Write a transaction to the replica for timestamping
   rpc Write(Transaction) returns (Vote);
 
