@@ -58,16 +58,25 @@ func TestFlow(t *testing.T) {
 	// Start client with replica config.
 	client.Start(replicaConfigs)
 
-	// Send an example write.
+	// Send transactions (stuttered).
 	client.Write(makeTx(1))
+	time.Sleep(100 * time.Millisecond)
+	client.Write(makeTx(2))
+	time.Sleep(100 * time.Millisecond)
+	client.Write(makeTx(3))
+	time.Sleep(100 * time.Millisecond)
 	client.Write(makeTx(4))
-	client.Write(makeTx(7))
 
-	// Simulate for 5s then exit.
+	// Simulate for a duration.
+	SLEEP_TIME := 3 * time.Second
 	ch := make(chan bool)
 	go func() {
-		time.Sleep(5 * time.Second)
+		time.Sleep(SLEEP_TIME)
 		ch <- true
 	}()
+
+	// Read the pod and print the transaction timings.
+	client.Read()
+
 	<-ch
 }

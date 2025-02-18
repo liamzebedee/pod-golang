@@ -266,12 +266,11 @@ type ReadResponse struct {
 	// Auxiliary data.
 	// Cpp is a set of votes that the client has received from replicas
 	// For now, commenting this out as we don't need it.
-	// CProp []*pb.Vote
+	// Cpp []*pb.Vote
 }
 
 func (cl *Client) Read() ReadResponse {
 	var T []*pb.Transaction
-	// var Cpp []*pb.Vote
 
 	// 1. Compute rmin, rmax, rconf for each transaction.
 	for tx, replicas := range cl.timestamps {
@@ -324,6 +323,11 @@ func (cl *Client) Read() ReadResponse {
 	// for _, ts := range cl.mostRecentTimestamp {
 	// 	Cpp = append(Cpp, ts.getVoteMsg())
 	// }
+
+	fmt.Printf("Read rperf=%f\n", rPerf)
+	for _, tx := range T {
+		fmt.Printf("%s\n", tx.FormatString())
+	}
 
 	return ReadResponse{T, rPerf}
 }
