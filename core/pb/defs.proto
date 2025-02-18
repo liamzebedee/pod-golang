@@ -3,19 +3,9 @@ option go_package = "github.com/liamzebedee/pod-golang/pb";
 
 package pb;
 
-// the reader obtains associated timestamps rmin, rmax,rconf and auxiliary data Ctx, which may evolve
 message Transaction {
-  // The minimum round.
-  double r_min = 1;
-  
-  // The maximum round.
-  double r_max = 2;
-  
-  // Undefined confirmed round.
-  double r_conf = 3;
-
   // Transaction data.
-  bytes ctx = 4;
+  bytes data = 1;
 }
 
 // A vote is a tuple (tx,ts,sn,σ,R), where tx is a trans- action, ts is a timestamp, sn is a sequence number, σ is a signature, and R is a replica. A vote is valid if σ is a valid signature on message m = (tx, ts, sn) with respect to the public key pkR of replica R.

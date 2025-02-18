@@ -24,14 +24,14 @@ func getRandomPort() string {
 
 func makeTx(data byte) *pb.Transaction {
 	return &pb.Transaction{
-		Ctx:   []byte{data},
-		RMin:  0,
-		RMax:  0,
-		RConf: 0,
+		Data: []byte{data},
 	}
 }
 
 func TestFlow(t *testing.T) {
+	fmt.Println("pod network test")
+	fmt.Printf("system parameters: N=%d f=%d\n", pAlpha, pBeta)
+
 	// Setup replicas config.
 	replicas := make(map[PublicKey]*Replica)
 	replicaConfigs := []ReplicaInfo{}
@@ -59,13 +59,21 @@ func TestFlow(t *testing.T) {
 	client.Start(replicaConfigs)
 
 	// Send transactions (stuttered).
-	client.Write(makeTx(1))
-	time.Sleep(100 * time.Millisecond)
-	client.Write(makeTx(2))
-	time.Sleep(100 * time.Millisecond)
-	client.Write(makeTx(3))
-	time.Sleep(100 * time.Millisecond)
-	client.Write(makeTx(4))
+	txs := []*pb.Transaction{
+		makeTx(1),
+		makeTx(2),
+		makeTx(3),
+		makeTx(4),
+	}
+	for _, tx := range txs {
+		t.Logf("writing tx: %s", tx.ID())
+
+		err := client.Write(tx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	// Simulate for a duration.
 	SLEEP_TIME := 3 * time.Second
@@ -75,8 +83,9 @@ func TestFlow(t *testing.T) {
 		ch <- true
 	}()
 
+	<-ch
+
 	// Read the pod and print the transaction timings.
 	client.Read()
-
-	<-ch
+	t.Logf(client.ReadTx(txs[0].ID()).String())
 }

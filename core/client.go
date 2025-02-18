@@ -7,6 +7,8 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/liamzebedee/pod-go/core/pb"
 	"google.golang.org/grpc"
@@ -14,6 +16,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
+
+var WRITE_TIMEOUT = 5 * time.Second
 
 // Downstream consumers use the Client to interact with replicas
 type Client struct {
@@ -237,14 +241,27 @@ func (cl *Client) receiveVote(vote *pb.Vote, replica *ReplicaInfo) error {
 	return nil
 }
 
-func (cl *Client) Write(tx *pb.Transaction) {
+// Writes a transaction to the pod and awaits a quorum of votes.
+func (cl *Client) Write(tx *pb.Transaction) error {
+	var fails int32 = 0
+	var wg sync.WaitGroup
+
 	// Send transaction to all replicas.
 	for _, replica := range cl.replicas {
+		wg.Add(1)
+
 		go func(replica *ReplicaInfo) {
-			vote, err := replica.ReplicaServiceClient.Write(context.Background(), tx)
+			defer wg.Done()
+
+			// Timeout
+			ctx, cancel := context.WithTimeout(context.Background(), WRITE_TIMEOUT)
+			defer cancel()
+
+			vote, err := replica.ReplicaServiceClient.Write(ctx, tx)
 			if err != nil {
 				// skip.
 				fmt.Printf("Error writing to replica: %v", err)
+				atomic.AddInt32(&fails, 1)
 				return
 			}
 
@@ -252,84 +269,119 @@ func (cl *Client) Write(tx *pb.Transaction) {
 			cl.ingestVote(vote, replica)
 		}(replica)
 	}
+
+	// Wait for all writes to complete.
+	wg.Wait()
+
+	// If we couldn't write to at least a quorum of replicas, return error.
+	if pAlpha <= int(fails) {
+		return fmt.Errorf("write failures exceed minimum quorum")
+	}
+
+	return nil
 }
 
 type ReadResponse struct {
-	// T is a set of transactions with their associated timestamps
-	Txs []*pb.Transaction
+	// Txs is a set of transactions with their associated timestamps
+	Txs []*TxReadInfo
 
 	// The past-perfect round
 	// "The past-perfection safety property of pod guarantees that T contains all transactions that every other honest party will ever read with a confirmed round smaller than rperf"
 	// TLDR: forall tx in T, tx.RConf <= rperf
 	RPerf timestamp
-
-	// Auxiliary data.
-	// Cpp is a set of votes that the client has received from replicas
-	// For now, commenting this out as we don't need it.
-	// Cpp []*pb.Vote
 }
 
+// The timestamp information for a transaction.
+type TxReadInfo struct {
+	// The transaction ID.
+	TxID pb.TXID
+
+	// The minimum round.
+	RMin timestamp
+
+	// The maximum round.
+	RMax timestamp
+
+	// Undefined confirmed round.
+	RConf timestamp
+}
+
+func (tx *TxReadInfo) String() string {
+	rrange := tx.RMax - tx.RMin
+	return fmt.Sprintf("Transaction{ID: %s, RMin: %f, RConf: %f, RMax: %f, Range: %f}", tx.TxID, tx.RMin, tx.RConf, tx.RMax, rrange)
+}
+
+// Read all transaction timestamps from the pod.
 func (cl *Client) Read() ReadResponse {
-	var T []*pb.Transaction
+	var T []*TxReadInfo
 
 	// 1. Compute rmin, rmax, rconf for each transaction.
-	for tx, replicas := range cl.timestamps {
-		// 1. rmin
-		rMin := MinPossibleTimestamp(
-			tx,
-			cl.timestamps,
-			getReplicaIds(cl.replicas),
-			pAlpha, pBeta,
-			cl.mostRecentTimestamp,
-		)
-
-		// 2. rmax
-		rMax := MaxPossibleTimestamp(
-			tx,
-			cl.timestamps,
-			getReplicaIds(cl.replicas),
-			pAlpha, pBeta,
-		)
-
-		// 3. rconf
-		//
-		var rConf timestamp = -1
-		var timestampsList []timestamp
-		// var Ctx []*pb.Vote
-
-		// If we have a quorum of votes, calculate rconf.
-		nVotes := len(replicas)
-		if pAlpha <= nVotes {
-			// 1. Get all timestamps.
-			for _, ts := range replicas {
-				timestampsList = append(timestampsList, ts)
-				// Ctx = append(Ctx, ts.getVoteMsg())
-			}
-
-			// 2. Sort timestamps.
-			sort.Float64s(timestampsList)
-
-			// 3. Calculate median.
-			rConf = Median(timestampsList)
-		}
-
-		T = append(T, &pb.Transaction{
-			// TODO.
-			RMin: rMin, RMax: rMax, RConf: rConf, //, Ctx: Ctx
-		})
+	for txId := range cl.timestamps {
+		tx := cl.ReadTx(txId)
+		T = append(T, tx)
 	}
 
+	// 2. Compute past-perfect round (rperf).
 	rPerf := MinPossibleTimestampForNewTx(cl.mostRecentTimestamp, pAlpha, pBeta)
-	// for _, ts := range cl.mostRecentTimestamp {
-	// 	Cpp = append(Cpp, ts.getVoteMsg())
-	// }
 
 	fmt.Printf("Read rperf=%f\n", rPerf)
 	for _, tx := range T {
-		fmt.Printf("%s\n", tx.FormatString())
+		fmt.Printf("- %s\n", tx.String())
 	}
 
 	return ReadResponse{T, rPerf}
+}
+
+// Read a specific transaction timestamp from the pod.
+func (cl *Client) ReadTx(txId pb.TXID) *TxReadInfo {
+	replicas, ok := cl.timestamps[txId]
+	if !ok {
+		return nil
+	}
+
+	// Compute rmin, rmax, rconf.
+
+	// 1. rmin
+	rMin := MinPossibleTimestamp(
+		txId,
+		cl.timestamps,
+		getReplicaIds(cl.replicas),
+		pAlpha, pBeta,
+		cl.mostRecentTimestamp,
+	)
+
+	// 2. rmax
+	rMax := MaxPossibleTimestamp(
+		txId,
+		cl.timestamps,
+		getReplicaIds(cl.replicas),
+		pAlpha, pBeta,
+	)
+
+	// 3. rconf
+	//
+	var rConf timestamp = -1
+	var timestampsList []timestamp
+
+	// If we have a quorum of votes, calculate rconf.
+	nVotes := len(replicas)
+	if pAlpha <= nVotes {
+		// 1. Get all timestamps.
+		for _, ts := range replicas {
+			timestampsList = append(timestampsList, ts)
+		}
+
+		// 2. Sort timestamps.
+		sort.Float64s(timestampsList)
+
+		// 3. Calculate median.
+		rConf = Median(timestampsList)
+	}
+
+	return &TxReadInfo{
+		TxID: txId,
+		RMin: rMin, RMax: rMax, RConf: rConf,
+	}
 }
 
 type ReplicaInfo struct {

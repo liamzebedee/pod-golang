@@ -43,7 +43,7 @@ func signVote(vote *pb.Vote, keypair Keypair) []byte {
 	buf := []byte{}
 
 	// buf += vote.tx
-	buf = append(buf, vote.Tx.GetCtx()...)
+	buf = append(buf, vote.Tx.GetData()...)
 
 	// buf += vote.ts
 	buf_ts := make([]byte, 8)
@@ -89,10 +89,7 @@ func (s *Replica) makeHeartbeatVote() (*pb.Vote, error) {
 
 	// 3. Sign the transaction.
 	heartbeatTx := &pb.Transaction{
-		Ctx:   []byte{},
-		RMin:  0,
-		RMax:  0,
-		RConf: 0,
+		Data: []byte{},
 	}
 
 	vote := &pb.Vote{
