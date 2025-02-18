@@ -115,6 +115,11 @@ func (rep *Replica) Write(ctx context.Context, tx *pb.Transaction) (*pb.Vote, er
 	}
 	rep.seen[tx.ID()] = true
 
+	// Check transaction version.
+	if tx.Version != 0 {
+		return nil, fmt.Errorf("invalid transaction version. supported versions: 0")
+	}
+
 	// 1. Assign a timestamp to the transaction.
 	ts := getTimestamp()
 
